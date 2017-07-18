@@ -1,42 +1,21 @@
 '''
 Kristen Wells
 
-Takes a sorted bam file and processes it to be used in calling ATAC-seq
-transcription factor peaks.
+Takes a fastq file and aligns to the mouse genome (including ERCCs) using STAR
 
-The bam file is first indexed using samtools. Duplicates are then removed from
-the sorted and indexed bam file using picard tools MarkDuplicates. Next, 
-samtools is again used to filter the reads based on samflag and quality score.
-Finally these files are indexed.
-
-The output is an indexed file for the original sorted bam file, a bam file with
-no duplicates (that can then be filtered using a different flag if desired), a
-filterd bam file and an index for the filtered bam file.
+Then inputs the STAR output bam into HTSeq to count the number of times each gene appears.
 '''
 import subprocess
 import sys
 import os
 import re
 
-data_file_directory = sys.argv[1]
-
 # read in files from the command line
 data_file_directory = sys.argv[1]
 
-# define all constants
-REMOVE_DUPLICATES = 'true'  # make remove duplicates true or flase
-ASSUME_SORTED = 'true'  # make assume sorted true or false
-
-# full location of picard tools
-MARK_DUPLICATES_LOCATION = '/home/wuwei5/software/picard/picard/MarkDuplicates.jar'
-
-QUALITY = 20  # quality score for processing bam file
-FLAG_SORT = 1804  # flag used to process bam file
 INPUT_FILE_NAME = r'^[KW].+[gz]$'  # regex for file name
 SAMPLE_NAME = r'KW-\d+'  # regex for sample name
-
-# empty dictionary to keep track of completed tasks for each sample
-my_output_dict = {}
+gtf_path ="/home/kwells4/star/genome/mm10_ercc92/gencode.vM11.primary_assembly.annotation.ercc92.gtf"
 
 
 def align_reads(fastq_input, outfile_prefix):
@@ -45,70 +24,22 @@ def align_reads(fastq_input, outfile_prefix):
 	'''
 
 	star_call = (["STAR", "--runThreadN", "10", "--genomeDir",
-		"/home/arrajpur/star/genome/mm10/index/", " --sjdbGTFfile",
-		"/home/arrajpur/star/genome/mm10/gencode.vM11.primary_assembly.annotation.gtf",
+		"/home/kwells4/star/genome/mm10_ercc92/index/", " --sjdbGTFfile",
+		"/home/kwells4/star/genome/mm10_ercc92/gencode.vM11.primary_assembly.annotation.gtf",
 		"--readFilesIn", fastq_input, "--readFilesCommand",
 		"zcat", "--outSAMtype", "BAM", "SortedByCoordinate", "--outFileNamePrefix", outfile_prefix])
 
 	subprocess.call(star_call)
 
-def remove_duplicate_reads(dup_input_file, dup_output_file, metrics_file):
+def HTseq(bam_input, output_file):
 	'''
-	Calls the mark duplicates command from the command line using subprocess
-	call. Uses commands for sorted, metrics file, input, output, and location
-	specified by variables defined at the top of the program. Will output
-	a metrics file and a bam file named based on the output file name. Requires
-	a input file, an output file, and a metrics file.
+	Calls HTseq
 	'''
 
-	# setup the command to remove duplicates using picard tools
-	remove_duplicates_call = (["java", "-Xmx4G", "-jar",
-		MARK_DUPLICATES_LOCATION, "INPUT=" + dup_input_file,
-		"OUTPUT=" + dup_output_file, "REMOVE_DUPLICATES=" + REMOVE_DUPLICATES,
-		"ASSUME_SORTED=" + ASSUME_SORTED, "METRICS_FILE=" + metrics_file])
+	htseq_call = (["htseq-count", 
+		"-f", "bam", "-s", "no", bam_input, gtf_path])
 
-	# call the remove duplicates command
-	subprocess.call(remove_duplicates_call)
-
-	# return that duplicates were removed
-	return 'removed dup'
-
-
-def filter_for_mapping_quality(map_input_file, map_output_file):
-	'''
-	Uses samtools view to fileter reads based on quality and samflag. The
-	quality score and samflag are specified by variables defined at the top
-	of the program. Will output a filtered bam file named based on the output
-	file name. Requires an input and an output file.
-	'''
-
-	# define the map quality command required to filter reads using samtools
-	map_quality = (['samtools', 'view', '-q', str(QUALITY), '-F',
-		str(FLAG_SORT), '-b', map_input_file])
-
-	# call the map quality command using the output file as the stdout
-	subprocess.call(map_quality, stdout=map_output_file)
-
-	# return that the file was filtered
-	return 'map quality'
-
-
-def index_bam(index_input_file):
-
-	'''
-	Uses samtools to index a bam file. Will output an index file based on
-	the name of the bam input file. Requires a bam input file.
-	'''
-
-	# define the index command required to index a bam file
-	index_call = (['samtools', 'index', index_input_file])
-
-	# call the index command
-	subprocess.call(index_call)
-
-	# return that the bam file was indexed
-	return 'indexed'
-
+	subprocess.call(htseq_call, stdout=output_file)
 
 # read each file from the directory
 for file_name in os.listdir(data_file_directory):
@@ -127,47 +58,26 @@ for file_name in os.listdir(data_file_directory):
 		# name the input file
 		fastq_file = file_path
 
-		# name the metrics based on the sample name
-		metrics_file = ('metrics.' + sample_name + '.txt')
-
-		# name the output of the remove duplicates file based on the sample
-		# name
-		remove_dup_output = (sample_name + '.rm.dup.bam')
-
-		# name the output of the bam file created from filtering the original
-		# bam file with duplicates removed
-		#sam_flag_output = (sample_name + '.f1804.bam')
-
-		# call the function to index the original bam file
-		#index_bam_bai = index_bam(bam_input)
-
+		#name star output file
 		bam_file = (sample_name + "Aligned.sortedByCoord.out.bam")
 
 		#call the star aligner
 		align_reads(fastq_file, sample_name)
 
-		# call the function to remove duplicates from the original bam file
-		remove_duplicates_BAM = remove_duplicate_reads(bam_file,
-			remove_dup_output, metrics_file)
+		#determine working directory
+		working_directory = os.getcwd() + "/"
 
-		# open the sam file to write to
-		# with open(sam_flag_output, 'wb') as sam_output_file:
+		#name file to be used for HTseq
+		star_output_file = os.path.join(working_directory, bam_file)
 
-		# 	# call the function to filter the file with duplciates removed
-		# 	BAM_map_quality = filter_for_mapping_quality(remove_dup_output, 
-		# 		sam_output_file)
+		#name output file
+		output_name = sample_name + "_HTSeq.txt"
+
+		#open output file for HTseq
+		with open(output_name, 'w') as output_file:
+				
+			#call HTseq
+			HTseq(star_output_file, output_file)
+
+
 		
-		# index the filetered bam file
-# 		index_bam_quality_bai = index_bam(sam_flag_output)
-
-# 		# take the return value from each function called and add it to a list
-# 		# that will keep track of what was completed for each original
-# 		# bam file
-# 		my_output_dict[sample_name] = [index_bam_bai, remove_duplicates_BAM,
-# 			BAM_map_quality, index_bam_quality_bai]
-
-# # open an output file to keep track of what was done to each file
-# with open(my_output_file, 'w') as output_file:
-
-# 	# write what was done to each original bam file to the output file
-# 	output_file.write(str(my_output_dict) + '\n')
